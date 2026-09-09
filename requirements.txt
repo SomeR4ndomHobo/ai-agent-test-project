@@ -1,0 +1,13 @@
+-r requirements-web.txt
+paddlepaddle>=3,<4
+paddleocr>=3,<4
+opencv-python-headless>=4.10,<5
+openai-agents>=0.2,<1
+pydantic-ai>=1,<2
+crewai>=1,<2
+crewai-tools>=1,<2
+langgraph>=1,<2
+langchain>=1,<2
+langchain-openai>=1,<2
+langchain-tavily>=0.2,<1
+
