@@ -26,11 +26,37 @@ MAX_IMAGE = 10 * 1024 * 1024
 MAX_REQUEST = 14 * 1024 * 1024
 MAX_JOBS = 4
 
+def worker_diagnostic(workdir):
+    """Bounded worker-log excerpt for private Render Logs; redact known secrets."""
+    try:
+        with (Path(workdir) / "worker.log").open("rb") as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - 65536)
+            stream.seek(offset)
+            if offset:
+                stream.readline()
+            text = stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return "No worker log was produced."
+    secrets = [value for key, value in os.environ.items()
+               if value and re.search(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", key, re.I)]
+    for secret in sorted(secrets, key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(?i)\bBearer\s+[^\s\"']+", "Bearer [REDACTED]", text)
+    text = re.sub(r"\b(?:sk-|tvly-)[A-Za-z0-9_-]+", "[REDACTED]", text)
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    return text[-12000:].strip() or "Worker exited without diagnostic output."
+
+
 def create_app(data_dir=None, worker=None):
     token = os.environ.get("BACKEND_ACCESS_TOKEN", "")
     if len(token) < 32:
         raise RuntimeError("Set BACKEND_ACCESS_TOKEN to a random secret of at least 32 characters.")
     origins = {s.strip().rstrip("/") for s in os.environ.get("ALLOWED_ORIGINS", "").split(",") if s.strip()}
+    # Render terminates HTTPS before forwarding HTTP to the Python container.
+    render_origin = os.environ.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if render_origin:
+        origins.add(render_origin)
     if "*" in origins:
         raise RuntimeError("ALLOWED_ORIGINS must list exact website origins.")
     data = Path(data_dir or os.environ.get("DATA_DIR", BASE / "data")).resolve()
@@ -80,11 +106,16 @@ def create_app(data_dir=None, worker=None):
                     )
                 result_path = workdir / "response.json"
                 if completed.returncode or not result_path.exists():
-                    raise RuntimeError("The Python engine failed. Check the private worker log and configured dependencies/API keys.")
+                    app.logger.error("CARD_LAB_WORKER_FAILURE job=%s kind=%s exit_code=%s\n%s",
+                                     job["id"], job["kind"], completed.returncode, worker_diagnostic(workdir))
+                    reason = "The worker was killed (SIGKILL); this can indicate a memory limit." if completed.returncode == -9 else "The Python worker failed."
+                    raise RuntimeError(f"{reason} Open Render Logs and search CARD_LAB_WORKER_FAILURE. Job: {job['id']}")
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             job.update(status="succeeded", result=result)
         except subprocess.TimeoutExpired:
-            job.update(status="failed", error="The engine exceeded its 15-minute limit. Please retry.")
+            app.logger.error("CARD_LAB_WORKER_FAILURE job=%s kind=%s timeout=900s\n%s",
+                             job["id"], job["kind"], worker_diagnostic(workdir))
+            job.update(status="failed", error=f"The engine exceeded its 15-minute limit. Check Render Logs for CARD_LAB_WORKER_FAILURE. Job: {job['id']}")
         except Exception as exc:
             app.logger.warning("Job %s failed (%s)", job["id"], type(exc).__name__)
             job.update(status="failed", error=str(exc) if isinstance(exc, RuntimeError) else "The job could not be completed. Check the backend logs.")
