@@ -8,9 +8,11 @@ RUN npm run build
 FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 PYTHONUTF8=1 DATA_DIR=/data PORT=8080 HOME=/home/app
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libglib2.0-0 libgl1 && rm -rf /var/lib/apt/lists/*
 COPY requirements*.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Fail during the image build if OpenCV cannot load its native libraries.
+RUN python -c "import cv2; print('OpenCV import OK', cv2.__version__)"
 RUN useradd --create-home --uid 10001 app && mkdir /data && chown app:app /data
 COPY --chown=app:app api_worker.py web_server.py ./
 COPY --chown=app:app backend/ ./backend/
