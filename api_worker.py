@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE / "backend"))
-# Use host environment variables, or explicitly configure a local .env path.
 load_dotenv(BASE / ".env")
 if os.environ.get("AI_AGENT_ENV_FILE"):
     load_dotenv(os.environ["AI_AGENT_ENV_FILE"])
@@ -19,12 +18,30 @@ ENGINES = {
     "langgraph": ("langraph_multiagent", "run_agent_langraph"),
 }
 
+
+def load_website_ocr():
+    # Each job has its own process. Override only acceleration while the
+    # unchanged backend constructs its OCR instance, then restore the class.
+    import paddleocr
+    constructor = paddleocr.PaddleOCR
+
+    def compatible_ocr(*args, **kwargs):
+        kwargs["enable_mkldnn"] = False
+        return constructor(*args, **kwargs)
+
+    paddleocr.PaddleOCR = compatible_ocr
+    try:
+        return importlib.import_module("ocr")
+    finally:
+        paddleocr.PaddleOCR = constructor
+
+
 def execute(kind, work):
     work = Path(work).resolve()
     payload = json.loads((work / "request.json").read_text(encoding="utf-8"))
     if kind == "ocr":
         # Do not import app.py: its eager imports initialize every AI framework.
-        original = importlib.import_module("ocr")
+        original = load_website_ocr()
         return original.identify_card(str(work / "image.png"))
     if kind == "research":
         module, name = ENGINES[payload["engine"]]
@@ -32,12 +49,14 @@ def execute(kind, work):
         return {"report": function(payload["lines"], "card")}
     raise ValueError("Unknown job type")
 
+
 def main():
     kind, work = sys.argv[1], Path(sys.argv[2]).resolve()
     os.chdir(work)
     (work / "results").mkdir(exist_ok=True)
     result = execute(kind, work)
     (work / "response.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+
 
 if __name__ == "__main__":
     main()

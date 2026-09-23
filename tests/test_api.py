@@ -48,15 +48,6 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get('/health', headers=self.headers).status_code, 200)
         self.assertEqual(self.client.get('/ready').status_code, 200)
 
-    def test_combined_website_and_private_api(self):
-        self.assertEqual(self.client.get('/').status_code, 200)
-        self.assertEqual(self.client.get('/favicon.svg').status_code, 200)
-        self.assertEqual(self.client.get('/health').status_code, 401)
-        self.assertNotEqual(self.client.get('/.env').status_code, 200)
-        self.assertNotEqual(self.client.get('/assets/../../.env').status_code, 200)
-        own_origin = {**self.headers, 'Origin': 'http://localhost'}
-        self.assertEqual(self.client.get('/health', headers=own_origin).status_code, 200)
-
     def test_origin_and_preflight(self):
         bad = {**self.headers, 'Origin': 'https://untrusted.example'}
         self.assertEqual(self.client.get('/health', headers=bad).status_code, 403)

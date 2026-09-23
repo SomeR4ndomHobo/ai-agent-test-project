@@ -4,6 +4,7 @@ import {ArrowRight,Check,Download,FileText,Fingerprint,ImagePlus,Layers3,LoaderC
 import {Select,SelectContent,SelectItem,SelectTrigger,SelectValue} from '@/components/ui/select';
 import {Tabs,TabsContent,TabsList,TabsTrigger} from '@/components/ui/tabs';
 import {registerCardTools} from '@/lib/webmcp';
+import {requestJson} from '@/lib/api';
 type Line={text:string;confidence:number|null};
 type Job={id:string;status:string;result?:{raw_ocr?:Line[];report?:string};error?:string};
 const engines=[{value:'openai',label:'OpenAI Agents',note:'Specialist agents with web search'},{value:'pydantic',label:'Pydantic AI',note:'Typed agent workflow'},{value:'crewai',label:'CrewAI',note:'Coordinated research crew'},{value:'langgraph',label:'LangGraph',note:'Graph-based research workflow'}];
@@ -17,7 +18,7 @@ export default function Home(){
  useEffect(()=>()=>stop.current?.abort(),[]);
  useEffect(()=>{if(!file){setPreview('');return;}const u=URL.createObjectURL(file);setPreview(u);return()=>URL.revokeObjectURL(u);},[file]);
  function choose(next?:File){if(!next||busy)return;if(!['image/jpeg','image/png','image/webp'].includes(next.type)){setError('Choose a JPG, PNG, or WebP image.');return;}if(next.size>10*1024*1024){setError('Choose an image smaller than 10 MB.');return;}setFile(next);setLines([]);setReport('');setError('');}
- async function request(path:string,options:RequestInit={},signal?:AbortSignal){const response=await fetch(url+path,{...options,signal,headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`,...options.headers}});const data=await response.json() as Job & {detail?:string};if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:data.error||'The request could not be completed.');return data;}
+ async function request(path:string,options:RequestInit={},signal?:AbortSignal){return requestJson<Job & {detail?:string}>(url+path,token,options,signal);}
  async function connect(){setError('');try{if(!token.trim())throw new Error('Enter your backend access token.');await request('/health',{},AbortSignal.timeout(12000));setConnected(true);setSettings(false);}catch(e){setConnected(false);setError(e instanceof TypeError?'Could not reach the research service. Please try again.':(e as Error).message);}}
  async function run(kind:'ocr'|'research'){
   if(!connected){setSettings(true);setError('Enter your access token to unlock OCR and research.');return;}

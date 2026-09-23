@@ -4,6 +4,7 @@ import binascii
 import hmac
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -27,25 +28,20 @@ MAX_REQUEST = 14 * 1024 * 1024
 MAX_JOBS = 4
 
 def worker_diagnostic(workdir):
-    """Bounded worker-log excerpt for private Render Logs; redact known secrets."""
     try:
-        with (Path(workdir) / "worker.log").open("rb") as stream:
-            stream.seek(0, 2)
-            offset = max(0, stream.tell() - 65536)
-            stream.seek(offset)
-            if offset:
-                stream.readline()
-            text = stream.read().decode("utf-8", errors="replace")
+        with (Path(workdir) / "worker.log").open("rb") as log:
+            log.seek(0, 2)
+            log.seek(max(0, log.tell() - 65536))
+            text = log.read().decode("utf-8", errors="replace")
     except OSError:
-        return "No worker log was produced."
-    secrets = [value for key, value in os.environ.items()
-               if value and re.search(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", key, re.I)]
-    for secret in sorted(secrets, key=len, reverse=True):
-        text = text.replace(secret, "[REDACTED]")
-    text = re.sub(r"(?i)\bBearer\s+[^\s\"']+", "Bearer [REDACTED]", text)
-    text = re.sub(r"\b(?:sk-|tvly-)[A-Za-z0-9_-]+", "[REDACTED]", text)
+        return "Worker log unavailable."
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
-    return text[-12000:].strip() or "Worker exited without diagnostic output."
+    for key, value in os.environ.items():
+        if value and re.search("KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", key, re.I):
+            text = text.replace(value, "[REDACTED]")
+    text = re.sub(r"Bearer\s+[^\s]+", "Bearer [REDACTED]", text, flags=re.I)
+    text = re.sub(r"(?:sk-|tvly-|tavily-)[A-Za-z0-9_-]+", "[REDACTED]", text)
+    return text[-12000:]
 
 
 def create_app(data_dir=None, worker=None):
@@ -53,16 +49,13 @@ def create_app(data_dir=None, worker=None):
     if len(token) < 32:
         raise RuntimeError("Set BACKEND_ACCESS_TOKEN to a random secret of at least 32 characters.")
     origins = {s.strip().rstrip("/") for s in os.environ.get("ALLOWED_ORIGINS", "").split(",") if s.strip()}
-    # Render terminates HTTPS before forwarding HTTP to the Python container.
-    render_origin = os.environ.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
-    if render_origin:
-        origins.add(render_origin)
+    if os.environ.get("RENDER_EXTERNAL_URL"):
+        origins.add(os.environ["RENDER_EXTERNAL_URL"].rstrip("/"))
     if "*" in origins:
         raise RuntimeError("ALLOWED_ORIGINS must list exact website origins.")
     data = Path(data_dir or os.environ.get("DATA_DIR", BASE / "data")).resolve()
     data.mkdir(parents=True, exist_ok=True)
     app = Flask(__name__, static_folder=None)
-    frontend = BASE / 'frontend' / 'dist'
     app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST
     executor = ThreadPoolExecutor(max_workers=1)
     capacity = threading.BoundedSemaphore(MAX_JOBS)
@@ -108,14 +101,13 @@ def create_app(data_dir=None, worker=None):
                 if completed.returncode or not result_path.exists():
                     app.logger.error("CARD_LAB_WORKER_FAILURE job=%s kind=%s exit_code=%s\n%s",
                                      job["id"], job["kind"], completed.returncode, worker_diagnostic(workdir))
-                    reason = "The worker was killed (SIGKILL); this can indicate a memory limit." if completed.returncode == -9 else "The Python worker failed."
-                    raise RuntimeError(f"{reason} Open Render Logs and search CARD_LAB_WORKER_FAILURE. Job: {job['id']}")
+                    raise RuntimeError("The Python worker failed. Open your hosting Logs and search CARD_LAB_WORKER_FAILURE. Job: " + job["id"])
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             job.update(status="succeeded", result=result)
         except subprocess.TimeoutExpired:
-            app.logger.error("CARD_LAB_WORKER_FAILURE job=%s kind=%s timeout=900s\n%s",
+            app.logger.error("CARD_LAB_WORKER_FAILURE job=%s kind=%s timeout=900\n%s",
                              job["id"], job["kind"], worker_diagnostic(workdir))
-            job.update(status="failed", error=f"The engine exceeded its 15-minute limit. Check Render Logs for CARD_LAB_WORKER_FAILURE. Job: {job['id']}")
+            job.update(status="failed", error="The engine exceeded its 15-minute limit. Please retry.")
         except Exception as exc:
             app.logger.warning("Job %s failed (%s)", job["id"], type(exc).__name__)
             job.update(status="failed", error=str(exc) if isinstance(exc, RuntimeError) else "The job could not be completed. Check the backend logs.")
@@ -123,19 +115,21 @@ def create_app(data_dir=None, worker=None):
             # Remove images and request inputs after processing. Keep the report and private diagnostic log.
             for name in ("image.png", "request.json", "response.json", "label_processed.jpg"):
                 (workdir / name).unlink(missing_ok=True)
-            for name in ("label_crop.jpg",):
+            for name in ("label_crop.jpg", "label_processed.jpg"):
                 (workdir / "results" / name).unlink(missing_ok=True)
             save(job)
             capacity.release()
 
     @app.before_request
     def authorize():
+        if request.method in ("GET", "HEAD") and (request.path in ("/", "/ready", "/favicon.svg") or request.path.startswith("/assets/")):
+            return None
         origin = request.headers.get("Origin")
-        if origin and origin.rstrip("/") not in origins and origin.rstrip('/') != request.host_url.rstrip('/'):
+        if origin and origin.rstrip("/") not in origins:
             return jsonify(detail="This website origin is not allowed."), 403
         if request.method == "OPTIONS":
             return "", 204
-        if request.path in ('/', '/favicon.svg', '/ready') or request.path.startswith('/assets/'):
+        if request.path == "/ready":
             return None
         supplied = request.headers.get("Authorization", "")
         if not hmac.compare_digest(supplied.encode(), ("Bearer " + token).encode()):
@@ -157,23 +151,21 @@ def create_app(data_dir=None, worker=None):
     def too_large(_):
         return jsonify(detail="The image exceeds the 10 MB limit."), 413
 
+    @app.get("/")
+    def index():
+        return send_from_directory(BASE / "frontend" / "dist", "index.html")
+
+    @app.get("/assets/<path:filename>")
+    def assets(filename):
+        return send_from_directory(BASE / "frontend" / "dist" / "assets", filename)
+
+    @app.get("/favicon.svg")
+    def favicon():
+        return send_from_directory(BASE / "frontend" / "dist", "favicon.svg")
+
     @app.get("/ready")
     def ready():
         return jsonify(status="ready")
-
-    @app.get('/')
-    def website():
-        if not (frontend / 'index.html').is_file():
-            return jsonify(detail='Build the frontend first: cd frontend && npm run build'), 503
-        return send_from_directory(frontend, 'index.html')
-
-    @app.get('/assets/<path:filename>')
-    def website_asset(filename):
-        return send_from_directory(frontend / 'assets', filename)
-
-    @app.get('/favicon.svg')
-    def favicon():
-        return send_from_directory(frontend, 'favicon.svg')
 
     @app.get("/health")
     def health():
@@ -214,7 +206,7 @@ def create_app(data_dir=None, worker=None):
                 return jsonify(detail="Choose OpenAI, Pydantic, CrewAI, or LangGraph."), 400
             lines = payload.get("lines")
             if not isinstance(lines, list) or not 1 <= len(lines) <= 100:
-                return jsonify(detail="Provide 1–100 label lines."), 400
+                return jsonify(detail="Provide 1Ã¢â‚¬â€œ100 label lines."), 400
             if any(not isinstance(line, dict) or not isinstance(line.get("text"), str) or len(line["text"]) > 1000 for line in lines):
                 return jsonify(detail="Invalid label text."), 400
             clean = [{"text": line["text"].strip(), "confidence": None} for line in lines if line["text"].strip()]
@@ -249,6 +241,7 @@ def create_app(data_dir=None, worker=None):
     return app
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     from waitress import serve
     serve(create_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8080")),
           threads=4, max_request_body_size=MAX_REQUEST)
