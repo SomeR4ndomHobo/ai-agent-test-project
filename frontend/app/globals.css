@@ -1,6 +1,6 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
-@import 'shadcn/tailwind.css';
+@import '../styles/shadcn.css';
 @theme inline{--color-background:var(--background);--color-foreground:var(--foreground);--color-primary:var(--primary);--color-primary-foreground:#fff;--color-muted:#eef1f3;--color-muted-foreground:#6c7481;--color-border:#dfe4e7;--color-input:#dfe4e7;--color-ring:#237455;--color-popover:#fff;--color-popover-foreground:#202c35;--color-accent:#eef5f0;--color-accent-foreground:#175e45;--radius-lg:10px;--radius-md:8px;--font-sans:Arial,Helvetica,sans-serif}
 :root{--background:#f5f7f8;--foreground:#202c35;--primary:#175e45;--border:#dfe4e7}
 *{box-sizing:border-box}body{margin:0;background:var(--background);color:var(--foreground);font-family:Arial,Helvetica,sans-serif;font-size:16px;-webkit-font-smoothing:antialiased}button{cursor:pointer;transition:background .16s}button:disabled{cursor:not-allowed;opacity:.48}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #4ca981;outline-offset:4px}a{color:inherit;text-decoration:none}button,input{font:inherit}svg{flex-shrink:0}button:not(:disabled):hover{filter:brightness(.96)}

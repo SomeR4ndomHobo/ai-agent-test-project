@@ -19,3 +19,7 @@ Install requirements.txt with Python 3.11. Copy backend.env.example to .env and 
 Hosting Logs contain CARD_LAB_WORKER_FAILURE with a bounded, credential-redacted traceback. Private worker.log files stay in each job directory. Review logs before sharing them. Run python -m unittest discover -s tests -v. Tests mock expensive engines; they do not validate live OCR or paid provider calls.
 
 The deleted deployment files were reconstructed from the earlier API backup and the latest fixes. Original AI Agent sources were copied without modification.
+
+## Smaller dependency installation
+
+The frontend installs only packages used by the active page and its Select/Tabs components. Unused component templates remain on disk but are outside the active TypeScript entrypoints. Their dependencies must be added if those templates are used later. The shadcn stylesheet is vendored with its license so builds do not need the UI-generator CLI. Pydantic uses pydantic-ai-slim[openai], retaining the existing OpenAI Responses backend. All four research engines remain installed. PaddleOCR and CrewAI still have substantial transitive dependencies.
